@@ -2,8 +2,10 @@ name: Sprawdzanie cen lotów
 
 on:
   schedule:
-    - cron: "15 5 * * *"   # codziennie ok. 6:15 czasu polskiego (zimą) – pełne sprawdzanie
-    - cron: "7 * * * *"    # co godzinę: czy w aplikacji kliknięto „Sprawdź teraz”
+    # GitHub potrafi pominąć zaplanowane uruchomienie – dlatego poranne sprawdzenie robi pierwsze
+    # uruchomienie po 6:00 (czas polski), jeśli dziś jeszcze go nie było (czy_sprawdzac.py).
+    - cron: "15 5 * * *"   # ok. 6:15 czasu polskiego zimą
+    - cron: "7 * * * *"    # co godzinę: „Sprawdź teraz” z aplikacji i zapas dla porannego
   workflow_dispatch:
 
 concurrency:
@@ -27,8 +29,6 @@ jobs:
 
       - name: Czy sprawdzać teraz
         id: decyzja
-        env:
-          HARMONOGRAM: ${{ github.event.schedule }}
         run: python czy_sprawdzac.py
 
       - name: Instalacja
@@ -51,4 +51,5 @@ jobs:
           MAIL_TO: ${{ secrets.MAIL_TO }}
           BRIGHT_DATA_API_KEY: ${{ secrets.BRIGHT_DATA_API_KEY }}
           BRIGHT_DATA_ZONE: ${{ secrets.BRIGHT_DATA_ZONE }}
+          POWOD: ${{ steps.decyzja.outputs.powod }}
         run: python narzedzie.py

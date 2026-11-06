@@ -245,6 +245,21 @@ def test_itaka_uklad_2026():
     assert itaka.czasy(ITAKA_2026, DZIS)[(D(2026, 12, 28), D(2027, 1, 5))] == (620, 710)
 
 
+def test_harmonogram_poranne_mimo_pominietych_uruchomien():
+    import czy_sprawdzac as C
+    utc = dt.timezone.utc
+    rano = dt.datetime(2026, 11, 6, 6, 28, tzinfo=utc)         # 7:28 w Polsce (zima, UTC+1)
+    assert C.decyzja("schedule", rano, {"poranne": "2026-11-05"}, False) == ("tak", "poranne")
+    assert C.decyzja("schedule", rano, {"poranne": "2026-11-06"}, False) == ("nie", "")
+    assert C.decyzja("schedule", rano, {"poranne": "2026-11-06"}, True) == ("tak", "zlecenie")
+    assert C.decyzja("schedule", rano, {}, False) == ("tak", "poranne")
+    noc = dt.datetime(2026, 11, 6, 4, 30, tzinfo=utc)          # 5:30 w Polsce – jeszcze nie pora
+    assert C.decyzja("schedule", noc, {"poranne": "2026-11-05"}, False) == ("nie", "")
+    lato = dt.datetime(2027, 7, 1, 4, 10, tzinfo=utc)          # 6:10 w Polsce latem (UTC+2)
+    assert C.decyzja("schedule", lato, {"poranne": "2027-06-30"}, False) == ("tak", "poranne")
+    assert C.decyzja("workflow_dispatch", noc, {}, False) == ("tak", "reczne")
+
+
 def test_google_drugi_krok_powroty(monkeypatch):
     import base64
     from fast_flights.pb.flights_pb2 import Info

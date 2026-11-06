@@ -398,7 +398,13 @@ def tryb_aplikacji(dzis: dt.date) -> None:
             print(f"BŁĄD wyjazdu {w.get('nazwa')}: {type(e).__name__}: {e}")
     for z in zlecone:
         db.usun(z)
-    magazyn.zapisz_stan(db, przebieg_koniec=dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"))
+    zmiany = {"przebieg_koniec": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")}
+    from czy_sprawdzac import GODZINA_PORANNA, POLSKA
+    teraz_pl = dt.datetime.now(POLSKA)
+    if os.environ.get("POWOD") in ("poranne", "reczne") and teraz_pl.hour >= GODZINA_PORANNA:
+        # znacznik dzisiejszego porannego sprawdzenia (data w Polsce) – czy_sprawdzac.py nie powtórzy go
+        zmiany["poranne"] = teraz_pl.date().isoformat()
+    magazyn.zapisz_stan(db, **zmiany)
     if lista and nieudane == len(lista):
         sys.exit(1)
 
