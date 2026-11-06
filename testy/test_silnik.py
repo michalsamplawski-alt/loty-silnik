@@ -96,6 +96,34 @@ def test_czytanie_czarterow():
     assert itaka.terminy("28.12 - 05.01.2027 (8 dni) od 5 996 zł") == {(D(2026, 12, 28), D(2027, 1, 5)): 5996}
 
 
+def strona_google(payload) -> str:
+    import json
+    return ("<html><script class=\"ds:1\">AF_initDataCallback({key: 'ds:1', hash: '2', data:"
+            + json.dumps(payload) + ", sideChannel: {}});</script></html>")
+
+
+def wynik_google(cena):
+    seg = [None] * 22
+    seg[3], seg[4], seg[5], seg[6] = "WAW", "Warszawa", "Bangkok", "BKK"
+    seg[8], seg[10], seg[11], seg[17], seg[20], seg[21] = [14, 45], [7, 5], 620, "787", [2027, 2, 13], [2027, 2, 14]
+    lot = [None] * 23
+    lot[0], lot[1], lot[2], lot[22] = "LO", ["LOT"], [seg], [None] * 7 + [500, 520]
+    return [lot, [[None, cena]] if cena else []]
+
+
+def test_google_odporny_odczyt():
+    # Trasa bez lotów: strona bez listy linii (payload[7]) – wcześniej IndexError, teraz „brak lotów”.
+    with pytest.raises(google.FlightsNotFound):
+        google.parse(strona_google([None, None, None, [None], None, None, None, [None, []]]))
+    # Jeden wynik bez ceny nie psuje pozostałych.
+    loty = google.parse(strona_google([None, None, None, [[wynik_google(4900), wynik_google(None)]],
+                                       None, None, None, [None, []]]))
+    assert [l.price for l in loty] == [4900]
+    assert google.ocen(loty[0], K)["bezposredni"]
+    with pytest.raises(ValueError):
+        google.parse("<html>okno zgody</html>")
+
+
 # Prawdziwe fragmenty stron (listopad 2026): Rainbow po kliknięciu dnia, Itaka – lista ofert.
 RAINBOW_2026 = """Wylot
 Pt. 12 lut / 1720 zł

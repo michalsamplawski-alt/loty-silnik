@@ -12,11 +12,58 @@ import os
 import random
 import time
 
+import json
+
 import primp
 from fast_flights import FlightQuery, FlightsNotFound, Passengers, create_query
-from fast_flights.parser import parse
+from fast_flights.model import Airport, CarbonEmission, Flights, SimpleDatetime, SingleFlight
+from fast_flights.parser import _parse_time
+from selectolax.lexbor import LexborHTMLParser
 
 from .wspolne import Odcinek, Podroz, Wynik, godz
+
+
+def _lot(k) -> Flights | None:
+    """Jeden wynik z danych strony; None, gdy niepełny (np. lot bez ceny)."""
+    try:
+        lot, cena = k[0], k[1][0][1]
+        if not cena:
+            return None
+        odcinki = [SingleFlight(
+            from_airport=Airport(code=s[3], name=s[4]), to_airport=Airport(code=s[6], name=s[5]),
+            departure=SimpleDatetime(date=tuple(s[20]), time=_parse_time(s[8])),
+            arrival=SimpleDatetime(date=tuple(s[21]), time=_parse_time(s[10])),
+            duration=s[11], plane_type=s[17]) for s in lot[2]]
+        try:
+            emisja = CarbonEmission(typical_on_route=lot[22][8], emission=lot[22][7])
+        except (IndexError, TypeError):
+            emisja = CarbonEmission(0, 0)
+        return Flights(type=lot[0], price=cena, airlines=lot[1], flights=odcinki, carbon=emisja)
+    except (IndexError, TypeError, KeyError):
+        return None
+
+
+def parse(html: str) -> list[Flights]:
+    """Odporny odczyt wyników Google Flights (zamiast fast_flights.parser.parse).
+
+    Biblioteka wywraca się, gdy na trasie nie ma lotów (strona bez listy linii) albo gdy jeden
+    z wyników nie ma ceny – wtedy całe zapytanie przepadało. Tu: brak lotów = FlightsNotFound,
+    a niepełne wyniki są pomijane pojedynczo. Inne wyjątki = strony nie dało się odczytać.
+    """
+    skrypt = LexborHTMLParser(html).css_first(r"script.ds\:1")
+    if skrypt is None:
+        raise ValueError("brak danych wyników na stronie (blokada lub okno zgody?)")
+    dane = skrypt.text().split("data:", 1)[1].rsplit(",", 1)[0]
+    if dane.endswith("errorHasStatus: true"):
+        raise FlightsNotFound("no flights found; received error")
+    payload = json.loads(dane)
+    try:
+        surowe = payload[3][0]
+    except (IndexError, TypeError):
+        surowe = None
+    if not surowe:
+        raise FlightsNotFound("brak lotów na tej trasie")
+    return [lot for lot in map(_lot, surowe) if lot]
 
 URL = "https://www.google.com/travel/flights"
 # Zgoda na ciasteczka Google – bez niej z europejskiego IP przychodzi okno zgody zamiast wyników.
