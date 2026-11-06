@@ -1,0 +1,54 @@
+name: Sprawdzanie cen lotów
+
+on:
+  schedule:
+    - cron: "15 5 * * *"   # codziennie ok. 6:15 czasu polskiego (zimą) – pełne sprawdzanie
+    - cron: "7 * * * *"    # co godzinę: czy w aplikacji kliknięto „Sprawdź teraz”
+  workflow_dispatch:
+
+concurrency:
+  group: loty
+  cancel-in-progress: false
+
+jobs:
+  sprawdz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY }}
+      DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
+      DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Czy sprawdzać teraz
+        id: decyzja
+        env:
+          HARMONOGRAM: ${{ github.event.schedule }}
+        run: python czy_sprawdzac.py
+
+      - name: Instalacja
+        if: steps.decyzja.outputs.uruchom == 'tak'
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Testy logiki
+        if: steps.decyzja.outputs.uruchom == 'tak'
+        run: python -m pytest -q testy
+
+      - name: Sprawdzenie cen dla wyjazdów z aplikacji
+        if: steps.decyzja.outputs.uruchom == 'tak'
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          BRIGHT_DATA_API_KEY: ${{ secrets.BRIGHT_DATA_API_KEY }}
+          BRIGHT_DATA_ZONE: ${{ secrets.BRIGHT_DATA_ZONE }}
+        run: python narzedzie.py
