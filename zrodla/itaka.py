@@ -42,9 +42,22 @@ def _rozklad(fragment: str) -> list | None:
     return odcinki
 
 
+CZAS_LOTU = re.compile(r"(\d{1,2})\s*godz\.(?:\s*(\d{1,2})\s*min)?")   # „10 godz. 20 min.”
+
+
+def _czas(fragment: str) -> int | None:
+    m = CZAS_LOTU.search(fragment)
+    return int(m.group(1)) * 60 + int(m.group(2) or 0) if m else None
+
+
 def godziny(tekst: str, dzis: dt.date | None = None) -> dict[tuple[dt.date, dt.date], tuple]:
     """{(wylot, powrót): (rozkład tam, rozkład powrotu)} z ofert w obecnym układzie strony."""
-    return {k: (tam, pow_) for k, _, tam, pow_ in _oferty(tekst, dzis or dt.date.today())}
+    return {k: (tam, pow_) for k, _, tam, pow_, _, _ in _oferty(tekst, dzis or dt.date.today())}
+
+
+def czasy(tekst: str, dzis: dt.date | None = None) -> dict[tuple[dt.date, dt.date], tuple]:
+    """{(wylot, powrót): (minut lotu tam, minut lotu z powrotem)}."""
+    return {k: (ct, cp) for k, _, _, _, ct, cp in _oferty(tekst, dzis or dt.date.today())}
 
 
 def _oferty(tekst: str, dzis: dt.date):
@@ -59,13 +72,13 @@ def _oferty(tekst: str, dzis: dt.date):
         if not 4 <= (powrot - wylot).days <= 30:
             continue
         tam, _, pow_ = t.group(0).partition("Powrót:")
-        yield (wylot, powrot), int(re.sub(r"\D", "", cena)), _rozklad(tam), _rozklad(pow_)
+        yield (wylot, powrot), int(re.sub(r"\D", "", cena)), _rozklad(tam), _rozklad(pow_), _czas(tam), _czas(pow_)
 
 
 def terminy(tekst: str, dzis: dt.date | None = None) -> dict[tuple[dt.date, dt.date], int]:
     dzis = dzis or dt.date.today()
     wyniki: dict[tuple[dt.date, dt.date], int] = {}
-    for klucz, c, _, _ in _oferty(tekst, dzis):
+    for klucz, c, *_ in _oferty(tekst, dzis):
         wyniki[klucz] = min(c, wyniki.get(klucz, c))
     for t in WZOR.finditer(tekst):
         d1, m1, r1, d2, m2, r2, cena = t.groups()
@@ -112,7 +125,7 @@ def pobierz(okna, U, dzis: dt.date, test: bool = False, log=print) -> Wynik:
     wynik = Wynik("itaka", zapytania=1)
     try:
         tekst = _tekst_strony(U)
-        lista, rozklady = terminy(tekst, dzis), godziny(tekst, dzis)
+        lista, rozklady, minuty = terminy(tekst, dzis), godziny(tekst, dzis), czasy(tekst, dzis)
     except Exception as e:
         return Wynik("itaka", zapytania=1, status="błąd", uwaga=f"{type(e).__name__}: {e}")
     log(f"Itaka: odczytano {len(lista)} terminów")
@@ -123,9 +136,11 @@ def pobierz(okna, U, dzis: dt.date, test: bool = False, log=print) -> Wynik:
     for (w, r), c in lista.items():
         if w > dzis:
             tam, pow_ = rozklady.get((w, r), (None, None))
+            ct, cp = minuty.get((w, r), (None, None))
             wynik.podroze.append(Podroz("itaka", "czarter", U.ITAKA_LOTNISKO, U.ITAKA_LOTNISKO,
                                         w, r, c, OPIS, True, [U.ITAKA_URL], cel=U.CEL,
-                                        linie=["Itaka (czarter LOT)"], rozklad_tam=tam, rozklad_pow=pow_))
+                                        linie=["Itaka (czarter LOT)"], rozklad_tam=tam, rozklad_pow=pow_,
+                                        czas_tam=ct, czas_pow=cp))
     return wynik
 
 

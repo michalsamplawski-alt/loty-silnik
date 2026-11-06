@@ -184,7 +184,12 @@ def jako_dane(p: Podroz, okno: Okno, K=None) -> dict:
             "bezposredni": p.bezposredni, "linki": [l for l in p.linki if l], "dwa_bilety": p.dwa_bilety,
             "noce": okno.noce(p.wylot, p.powrot), "linie": p.linie, "przes_tam": p.przes_tam,
             "przes_pow": p.przes_pow, "czas_tam": p.czas_tam, "czas_pow": p.czas_pow,
-            "rozklad_tam": p.rozklad_tam, "rozklad_pow": p.rozklad_pow}
+            "rozklad_tam": p.rozklad_tam, "rozklad_pow": p.rozklad_pow,
+            # bilet Google w obie strony: lotu powrotnego nie znamy, ale Google dobrał go z tymi limitami
+            "powrot_limit": ({"czas": int(K.MAKS_CZAS_PODROZY_GODZ * 60) if K.MAKS_CZAS_PODROZY_GODZ else None,
+                              "przesiadka": int(K.MAKS_PRZESIADKA_GODZ * 60) if K.MAKS_PRZESIADKA_GODZ else None,
+                              "przesiadek": K.MAKS_PRZESIADEK}
+                             if K and p.zrodlo == "google" and p.przes_pow is None else None)}
 
 
 LIMIT_POLACZEN = 600

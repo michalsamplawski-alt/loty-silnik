@@ -242,6 +242,23 @@ def test_itaka_uklad_2026():
     assert itaka.godziny(ITAKA_2026, DZIS)[(D(2026, 12, 28), D(2027, 1, 5))] == (
         [["WAW", "19:30", "BKK", "11:50", 1]], [["BKK", "13:45", "WAW", "19:35", 0]])
     assert itaka.godziny(ITAKA_2026, DZIS)[(D(2027, 1, 4), D(2027, 1, 12))] == (None, None)   # niepełna karta
+    assert itaka.czasy(ITAKA_2026, DZIS)[(D(2026, 12, 28), D(2027, 1, 5))] == (620, 710)
+
+
+def test_google_warunki_dla_powrotu():
+    # Limity podróży i przesiadek idą do Google dla OBU kierunków (powrót wybiera się w drugim kroku).
+    assert google.filtry(K) == {"max_duration_minutes": 17 * 60, "max_layover_minutes": 4 * 60}
+    assert google.filtry(kryteria(MIN_PRZESIADKA_GODZ=1.5))["min_layover_minutes"] == 90
+    q = google.zapytanie(K, "WAW", "BKK", D(2026, 12, 26), D(2027, 1, 4))
+    info = q.pb() if hasattr(q, "pb") else None
+    if info is not None:
+        assert [d.max_duration_minutes for d in info.data] == [1020, 1020]
+        assert [d.max_layover_minutes for d in info.data] == [240, 240]
+    okno = wczytaj_okna(K, DZIS)[0]
+    p = Podroz("google", "rejsowy", "WAW", "WAW", D(2026, 12, 27), D(2027, 1, 6), 5100, "x", True, ["g"],
+               przes_pow=None, czas_tam=620)
+    assert N.jako_dane(p, okno, K)["powrot_limit"] == {"czas": 1020, "przesiadka": 240, "przesiadek": 1}
+    assert N.jako_dane(wyniki_przykladowe()["itaka"].podroze[0], okno, K)["powrot_limit"] is None
 
 
 def wyniki_przykladowe():

@@ -129,15 +129,33 @@ def _godzina(tekst) -> int | None:
     return int(str(tekst).split(":")[0])
 
 
+def filtry(U) -> dict:
+    """Warunki, które Google stosuje osobno do KAŻDEGO kierunku – także do powrotu.
+
+    Przy bilecie w obie strony Google pokazuje tylko lot tam (powrót wybiera się w drugim kroku),
+    więc bez tych filtrów cena mogła dotyczyć powrotu z za długą przesiadką lub podróżą.
+    Z filtrami cena jest liczona tylko z powrotów spełniających warunki, a link do Google je zachowuje.
+    """
+    f = {}
+    if getattr(U, "MAKS_CZAS_PODROZY_GODZ", None):
+        f["max_duration_minutes"] = int(U.MAKS_CZAS_PODROZY_GODZ * 60)
+    if getattr(U, "MAKS_PRZESIADKA_GODZ", None):
+        f["max_layover_minutes"] = int(U.MAKS_PRZESIADKA_GODZ * 60)
+    if getattr(U, "MIN_PRZESIADKA_GODZ", None):
+        f["min_layover_minutes"] = int(U.MIN_PRZESIADKA_GODZ * 60)
+    return f
+
+
 def zapytanie(U, skad: str, dokad: str, data: dt.date, powrot: dt.date | None = None):
     """Pierwszy odcinek zaczyna się w `skad`. Godziny wylotu dotyczą tylko odlotu z Polski."""
     od, do = (list(getattr(U, "GODZINY_WYLOTU", None) or []) + [None, None])[:2]
     z_polski = skad in U.LOTNISKA_WYLOTU
+    f = filtry(U)
     loty = [FlightQuery(date=data.isoformat(), from_airport=skad, to_airport=dokad,
                         earliest_departure_hour=_godzina(od) if z_polski else None,
-                        latest_departure_hour=_godzina(do) if z_polski else None)]
+                        latest_departure_hour=_godzina(do) if z_polski else None, **f)]
     if powrot:
-        loty.append(FlightQuery(date=powrot.isoformat(), from_airport=dokad, to_airport=skad))
+        loty.append(FlightQuery(date=powrot.isoformat(), from_airport=dokad, to_airport=skad, **f))
     return create_query(
         flights=loty, trip="round-trip" if powrot else "one-way", seat=getattr(U, "KLASA", "economy"),
         passengers=Passengers(adults=1), language="pl", currency="PLN",
