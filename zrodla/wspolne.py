@@ -93,6 +93,7 @@ class Odcinek:
     linie: list[str] = field(default_factory=list)
     przesiadki: list = field(default_factory=list)   # [[port, minuty], …]
     czas_min: int | None = None                       # cała podróż w jedną stronę
+    rozklad: list | None = None   # [[skąd, „HH:MM”, dokąd, „HH:MM”, dni po wylocie], …]; None = nieznany
 
 
 @dataclass
@@ -115,6 +116,8 @@ class Podroz:
     przes_pow: list | None = field(default_factory=list)
     czas_tam: int | None = None
     czas_pow: int | None = None
+    rozklad_tam: list | None = None   # godziny odcinków (jak Odcinek.rozklad); None = nieznane
+    rozklad_pow: list | None = None
 
     @property
     def trasa(self) -> str:

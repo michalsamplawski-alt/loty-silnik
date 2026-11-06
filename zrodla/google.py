@@ -178,7 +178,17 @@ def ocen(lot, U) -> dict | None:
     return {"cena": int(lot.price), "bezposredni": not porty,
             "opis": ("★ " if ulubione else "") + f"{trasa} · {linie} · {godz(czas)}",
             "linie": list(lot.airlines or []), "przesiadki": [[p, m] for p, m in zip(porty, przerwy)],
-            "czas": czas}
+            "czas": czas, "rozklad": rozklad(odcinki)}
+
+
+def rozklad(odcinki) -> list:
+    """[[skąd, odlot „HH:MM”, dokąd, przylot „HH:MM”, ile dni po dniu wylotu], …] – czasy lokalne."""
+    start = dt.date(*odcinki[0].departure.date)
+    wynik = []
+    for o in odcinki:
+        wynik.append([o.from_airport.code, "%02d:%02d" % tuple(o.departure.time), o.to_airport.code,
+                      "%02d:%02d" % tuple(o.arrival.time), (dt.date(*o.arrival.date) - start).days])
+    return wynik
 
 
 def najlepsze(loty, U) -> tuple[dict | None, dict | None]:
@@ -241,11 +251,13 @@ def pobierz(okna, U, dzis: dt.date, test: bool = False, log=print) -> Wynik:
             if typ == "rt":
                 wynik.podroze.append(Podroz("google", "rejsowy", lot, lot, d, r, o["cena"], o["opis"],
                                             o["bezposredni"], [q.url()], cel=cel, linie=o["linie"],
-                                            przes_tam=o["przesiadki"], przes_pow=None, czas_tam=o["czas"]))
+                                            przes_tam=o["przesiadki"], przes_pow=None, czas_tam=o["czas"],
+                                            rozklad_tam=o["rozklad"]))
             else:
                 wynik.odcinki.append(Odcinek("google", False, typ, lot, d, o["cena"], o["opis"],
                                              o["bezposredni"], q.url(), cel=cel, linie=o["linie"],
-                                             przesiadki=o["przesiadki"], czas_min=o["czas"]))
+                                             przesiadki=o["przesiadki"], czas_min=o["czas"],
+                                             rozklad=o["rozklad"]))
         if i % 20 == 0:
             log(f"  {i}/{len(lista)} (udane {wynik.udane}, tryb: {pob.tryb})")
         if i < len(lista):

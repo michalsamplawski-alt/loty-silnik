@@ -27,9 +27,27 @@ WZOR = re.compile(
 OPIS = "czarter Itaka (LOT, bez przesiadek)"
 
 
-def terminy(tekst: str, dzis: dt.date | None = None) -> dict[tuple[dt.date, dt.date], int]:
-    dzis = dzis or dt.date.today()
-    wyniki: dict[tuple[dt.date, dt.date], int] = {}
+GODZINA_PORT = re.compile(r"(\d{1,2}:\d{2})\s*\(([A-Z]{3})\)")   # „Warszawa-Okęcie 19:30 (WAW)”
+
+
+def _rozklad(fragment: str) -> list | None:
+    """Odcinki z kolejnych par „godzina (KOD)”: [[skąd, odlot, dokąd, przylot, dni], …]."""
+    pary = [(g.zfill(5), k) for g, k in GODZINA_PORT.findall(fragment)]
+    if len(pary) < 2:
+        return None
+    odcinki, dni = [], 0
+    for (g1, k1), (g2, k2) in zip(pary[::2], pary[1::2]):
+        dni += 1 if g2 < g1 else 0
+        odcinki.append([k1, g1, k2, g2, dni])
+    return odcinki
+
+
+def godziny(tekst: str, dzis: dt.date | None = None) -> dict[tuple[dt.date, dt.date], tuple]:
+    """{(wylot, powrót): (rozkład tam, rozkład powrotu)} z ofert w obecnym układzie strony."""
+    return {k: (tam, pow_) for k, _, tam, pow_ in _oferty(tekst, dzis or dt.date.today())}
+
+
+def _oferty(tekst: str, dzis: dt.date):
     for t in WZOR_KARTY.finditer(tekst):
         d1, m1, d2, m2, cena = t.groups()
         m1, m2 = MIESIACE[m1.lower()], MIESIACE[m2.lower()]
@@ -40,8 +58,15 @@ def terminy(tekst: str, dzis: dt.date | None = None) -> dict[tuple[dt.date, dt.d
             continue
         if not 4 <= (powrot - wylot).days <= 30:
             continue
-        c = int(re.sub(r"\D", "", cena))
-        wyniki[(wylot, powrot)] = min(c, wyniki.get((wylot, powrot), c))
+        tam, _, pow_ = t.group(0).partition("Powrót:")
+        yield (wylot, powrot), int(re.sub(r"\D", "", cena)), _rozklad(tam), _rozklad(pow_)
+
+
+def terminy(tekst: str, dzis: dt.date | None = None) -> dict[tuple[dt.date, dt.date], int]:
+    dzis = dzis or dt.date.today()
+    wyniki: dict[tuple[dt.date, dt.date], int] = {}
+    for klucz, c, _, _ in _oferty(tekst, dzis):
+        wyniki[klucz] = min(c, wyniki.get(klucz, c))
     for t in WZOR.finditer(tekst):
         d1, m1, r1, d2, m2, r2, cena = t.groups()
         try:
@@ -86,7 +111,8 @@ def _tekst_strony(U) -> str:
 def pobierz(okna, U, dzis: dt.date, test: bool = False, log=print) -> Wynik:
     wynik = Wynik("itaka", zapytania=1)
     try:
-        lista = terminy(_tekst_strony(U), dzis)
+        tekst = _tekst_strony(U)
+        lista, rozklady = terminy(tekst, dzis), godziny(tekst, dzis)
     except Exception as e:
         return Wynik("itaka", zapytania=1, status="błąd", uwaga=f"{type(e).__name__}: {e}")
     log(f"Itaka: odczytano {len(lista)} terminów")
@@ -96,9 +122,10 @@ def pobierz(okna, U, dzis: dt.date, test: bool = False, log=print) -> Wynik:
     wynik.udane = 1
     for (w, r), c in lista.items():
         if w > dzis:
+            tam, pow_ = rozklady.get((w, r), (None, None))
             wynik.podroze.append(Podroz("itaka", "czarter", U.ITAKA_LOTNISKO, U.ITAKA_LOTNISKO,
                                         w, r, c, OPIS, True, [U.ITAKA_URL], cel=U.CEL,
-                                        linie=["Itaka (czarter LOT)"]))
+                                        linie=["Itaka (czarter LOT)"], rozklad_tam=tam, rozklad_pow=pow_))
     return wynik
 
 

@@ -100,7 +100,8 @@ def podroze_w_oknie(K, okno: Okno, wyniki: dict[str, Wynik], dzis: dt.date) -> l
                                 opis, a.bezposredni and b.bezposredni, [a.link, b.link], dwa_bilety=True,
                                 cel=a.cel if a.cel == b.cel else f"{a.cel}/{b.cel}",
                                 linie=list(dict.fromkeys(a.linie + b.linie)), przes_tam=a.przesiadki,
-                                przes_pow=b.przesiadki, czas_tam=a.czas_min, czas_pow=b.czas_min))
+                                przes_pow=b.przesiadki, czas_tam=a.czas_min, czas_pow=b.czas_min,
+                                rozklad_tam=a.rozklad, rozklad_pow=b.rozklad))
     return sorted(lista, key=lambda p: (p.cena, p.wylot, p.powrot))
 
 
@@ -182,7 +183,8 @@ def jako_dane(p: Podroz, okno: Okno, K=None) -> dict:
             "lotnisko_powrotu": p.lotnisko_powrotu, "cel": p.cel, "cena": p.cena, "opis": p.opis,
             "bezposredni": p.bezposredni, "linki": [l for l in p.linki if l], "dwa_bilety": p.dwa_bilety,
             "noce": okno.noce(p.wylot, p.powrot), "linie": p.linie, "przes_tam": p.przes_tam,
-            "przes_pow": p.przes_pow, "czas_tam": p.czas_tam, "czas_pow": p.czas_pow}
+            "przes_pow": p.przes_pow, "czas_tam": p.czas_tam, "czas_pow": p.czas_pow,
+            "rozklad_tam": p.rozklad_tam, "rozklad_pow": p.rozklad_pow}
 
 
 LIMIT_POLACZEN = 600

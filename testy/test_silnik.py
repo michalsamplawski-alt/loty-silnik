@@ -120,6 +120,8 @@ def test_google_odporny_odczyt():
                                        None, None, None, [None, []]]))
     assert [l.price for l in loty] == [4900]
     assert google.ocen(loty[0], K)["bezposredni"]
+    assert google.ocen(loty[0], K)["rozklad"] == [["WAW", "14:45", "BKK", "07:05", 1]]
+    assert google.ocen(FRA, K)["rozklad"] == [["WAW", "07:00", "FRA", "09:00", 0], ["FRA", "11:00", "BKK", "05:00", 1]]
     with pytest.raises(ValueError):
         google.parse("<html>okno zgody</html>")
 
@@ -214,15 +216,32 @@ def test_rainbow_uklad_2026():
     wyl, pow_ = rainbow.podziel(RAINBOW_2026)
     assert rainbow.lista_cen(wyl, DZIS) == {D(2027, 2, 12): 1720, D(2027, 2, 13): 2340, D(2027, 2, 14): 2680}
     assert rainbow.lista_cen(pow_, DZIS) == {D(2027, 2, 21): 3559, D(2027, 2, 28): 3509}
-    assert rainbow.karty(RAINBOW_2026, K.NAZWY_LOTNISK) == [("KTW", 2340), ("WAW", 2520)]
+    assert rainbow.karty(RAINBOW_2026, K.NAZWY_LOTNISK) == [
+        ("KTW", 2340, [["KTW", "18:00", "BKK", "10:05", 1]]), ("WAW", 2520, [["WAW", "14:45", "BKK", "07:05", 1]])]
+    assert rainbow.godziny_powrotu(RAINBOW_2026) == [["BKK", "12:00", "KTW", "17:50", 0]]
     assert rainbow.lotnisko_wylotu(RAINBOW_2026, D(2027, 2, 13), K.NAZWY_LOTNISK) == "KTW"
     assert rainbow.lista_cen("Sob. 26 GRU / 3 440 zł", DZIS) == {D(2026, 12, 26): 3440}
+    # Rainbow sprzedaje te ceny tylko w parze: wylot + powrót = jedna podróż czarterowa, bez łączenia z innymi.
+    kod, cena, godz_tam = rainbow.karty(RAINBOW_2026, K.NAZWY_LOTNISK)[0]
+    podr = rainbow.pary(K, kod, D(2027, 2, 13), cena, godz_tam, rainbow.lista_cen(pow_, DZIS),
+                        rainbow.godziny_powrotu(RAINBOW_2026))
+    assert [(p.rodzaj, p.wylot, p.powrot, p.cena, p.dwa_bilety) for p in podr] == [
+        ("czarter", D(2027, 2, 13), D(2027, 2, 21), 2340 + 3559, False),
+        ("czarter", D(2027, 2, 13), D(2027, 2, 28), 2340 + 3509, False)]
+    assert podr[0].rozklad_pow == [["BKK", "12:00", "KTW", "17:50", 0]] and podr[1].rozklad_pow is None
+    okno = wczytaj_okna(kryteria(OKNA=[{"nazwa": "Luty", "od": "2027-02-12", "do": "2027-02-28"}]), DZIS)[0]
+    lista = N.podroze_w_oknie(K, okno, {"rainbow": Wynik("rainbow", podroze=podr), "google": Wynik("google", odcinki=[
+        Odcinek("google", False, "powrot", "KTW", D(2027, 2, 21), 1000, "x", True, "g", cel="BKK")])}, DZIS)
+    assert {p.rodzaj for p in lista} == {"czarter"}    # brak „czarter tam, rejsowy z powrotem”
 
 
 def test_itaka_uklad_2026():
     assert itaka.terminy(ITAKA_2026, DZIS) == {(D(2026, 12, 28), D(2027, 1, 5)): 6496,
                                                (D(2027, 1, 4), D(2027, 1, 12)): 5996}
     assert itaka.STRONY.search(ITAKA_2026).group(1) == "2"
+    assert itaka.godziny(ITAKA_2026, DZIS)[(D(2026, 12, 28), D(2027, 1, 5))] == (
+        [["WAW", "19:30", "BKK", "11:50", 1]], [["BKK", "13:45", "WAW", "19:35", 0]])
+    assert itaka.godziny(ITAKA_2026, DZIS)[(D(2027, 1, 4), D(2027, 1, 12))] == (None, None)   # niepełna karta
 
 
 def wyniki_przykladowe():

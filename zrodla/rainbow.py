@@ -3,6 +3,7 @@
 Strona pokazuje listę dni wylotu z ceną. Lotnisko wylotu i ceny powrotów pojawiają się
 dopiero po kliknięciu dnia – dlatego używamy przeglądarki (Playwright), która klika
 każdy dzień z Twoich zakresów i odczytuje lotnisko oraz powroty.
+Ceny są w trybie „w obie strony” – wynikiem są gotowe pary tam+powrót (nie osobne bilety).
 Gdy przeglądarka zawiedzie, tryb awaryjny czyta samą listę wylotów (bez lotniska i powrotów).
 """
 from __future__ import annotations
@@ -12,7 +13,7 @@ import html as html_mod
 import re
 from pathlib import Path
 
-from .wspolne import MIESIACE, SKROTY_MIESIECY, Odcinek, Wynik, rok_dla_miesiaca
+from .wspolne import MIESIACE, SKROTY_MIESIECY, Odcinek, Podroz, Wynik, rok_dla_miesiaca
 
 DZIEN_TYG = r"(?:pon|pn|wt|śr|czw|pt|sob|niedz|ndz|nd)\.?"
 MIES = "|".join(MIESIACE)
@@ -51,21 +52,39 @@ def podziel(tekst: str) -> tuple[str, str]:
     return tekst[:granica], tekst[granica:]
 
 
-WZOR_KARTY = re.compile(r"\(([A-Z]{3})\)(?:(?!zł/os).)*?(\d{1,2}\s?\d{3}|\d{3})\s?zł/os", re.S)
+# Karta lotu: „Poznań (POZ) 16:45 Bangkok (BKK) 09:35 Bagaż … 2440 zł/os.” (godziny lokalne).
+WZOR_KARTY = re.compile(
+    r"\(([A-Z]{3})\)(?:\s*(\d{1,2}:\d{2}))?(?:[^()]{0,80}?\(([A-Z]{3})\)\s*(\d{1,2}:\d{2}))?"
+    r"(?:(?!zł/os).)*?(\d{1,2}\s?\d{3}|\d{3})\s?zł/os", re.S)
 
 
-def karty(tekst: str, nazwy: dict[str, str]) -> list[tuple[str, int]]:
-    """Loty wybranego dnia: [(polskie lotnisko, cena za osobę), …] z kart pod listą dni wylotu."""
-    wyloty = podziel(tekst)[0]
-    pozycje = list(WZOR_POZYCJI.finditer(wyloty))
-    if not pozycje:
-        return []
+def _rozklad(k) -> list | None:
+    z, odlot, do, przylot = k.group(1), k.group(2), k.group(3), k.group(4)
+    if not (odlot and do and przylot):
+        return None
+    odlot, przylot = odlot.zfill(5), przylot.zfill(5)
+    return [[z, odlot, do, przylot, 1 if przylot < odlot else 0]]
+
+
+def _karty_w(fragment: str) -> list:
+    pozycje = list(WZOR_POZYCJI.finditer(fragment))
+    return list(WZOR_KARTY.finditer(fragment[pozycje[-1].end():])) if pozycje else []
+
+
+def karty(tekst: str, nazwy: dict[str, str]) -> list[tuple[str, int, list | None]]:
+    """Loty wybranego dnia: [(polskie lotnisko, cena za osobę, rozkład godzin), …] z kart pod listą dni."""
     polskie = set(nazwy.values())
-    wynik: list[tuple[str, int]] = []
-    for k in WZOR_KARTY.finditer(wyloty[pozycje[-1].end():]):
-        if k.group(1) in polskie and k.group(1) not in [x for x, _ in wynik]:
-            wynik.append((k.group(1), int(re.sub(r"\D", "", k.group(2)))))
+    wynik: list[tuple[str, int, list | None]] = []
+    for k in _karty_w(podziel(tekst)[0]):
+        if k.group(1) in polskie and k.group(1) not in [x[0] for x in wynik]:
+            wynik.append((k.group(1), int(re.sub(r"\D", "", k.group(5))), _rozklad(k)))
     return wynik
+
+
+def godziny_powrotu(tekst: str) -> list | None:
+    """Godziny z karty zaznaczonego (pierwszego) powrotu."""
+    k = _karty_w(podziel(tekst)[1])
+    return _rozklad(k[0]) if k else None
 
 
 def lotnisko_wylotu(tekst: str, data: dt.date, nazwy: dict[str, str]) -> str | None:
@@ -114,6 +133,18 @@ def _przycisk(strona, napisy):
         except Exception:
             continue
     return None
+
+
+def pary(U, kod: str, wylot: dt.date, cena_tam: int, godz_tam, powroty: dict[dt.date, int], godz_pow) -> list[Podroz]:
+    """Gotowe podróże tam i z powrotem z jednego kliknięcia dnia.
+
+    Ceny na tej stronie dotyczą trybu „w obie strony”: wylot i powrót są do kupienia tylko razem
+    (cena = wylot + powrót), więc nie łączymy ich z biletami innych przewoźników.
+    """
+    return [Podroz("rainbow", "czarter", kod, kod, wylot, r, cena_tam + c, OPIS, True, [U.RAINBOW_URL],
+                   cel=U.CEL, linie=["Rainbow (czarter LOT)"], rozklad_tam=godz_tam,
+                   rozklad_pow=godz_pow if nr == 0 else None)
+            for nr, (r, c) in enumerate(powroty.items())]
 
 
 def _zamknij_okno_ciasteczek(strona, czekaj_ms: int = 8000) -> None:
@@ -172,9 +203,9 @@ def _przegladarka(okna, U, dzis: dt.date, test: bool, log) -> Wynik:
                 log(f"  {d}: nie udało się kliknąć ({type(e).__name__})")
                 continue
             tekst = strona.inner_text("body")
-            loty = karty(tekst, U.NAZWY_LOTNISK) or [(lotnisko_wylotu(tekst, d, U.NAZWY_LOTNISK) or "?", wyloty[d])]
+            loty = karty(tekst, U.NAZWY_LOTNISK) or [(lotnisko_wylotu(tekst, d, U.NAZWY_LOTNISK) or "?", wyloty[d], None)]
             wynik.udane += 1
-            for i, (kod, cena) in enumerate(loty):
+            for i, (kod, cena, godziny) in enumerate(loty):
                 if kod != "?" and kod not in U.LOTNISKA_WYLOTU:
                     log(f"  {d}: {kod}, {cena} zł – lotnisko spoza kryteriów")
                     continue
@@ -187,10 +218,13 @@ def _przegladarka(okna, U, dzis: dt.date, test: bool, log) -> Wynik:
                         log(f"  {d}: {kod} – nie udało się zaznaczyć ({type(e).__name__})")
                         continue
                 powroty = lista_cen(podziel(tekst)[1], dzis)
+                godz_pow = godziny_powrotu(tekst)     # karta pokazuje pierwszy (zaznaczony) powrót
                 log(f"  {d}: {kod}, {cena} zł, powrotów: {len(powroty)}")
-                wynik.odcinki.append(Odcinek("rainbow", True, "tam", kod, d, cena, OPIS, True, U.RAINBOW_URL, cel=U.CEL, linie=["Rainbow (czarter LOT)"]))
-                for r, c in powroty.items():
-                    wynik.odcinki.append(Odcinek("rainbow", True, "powrot", kod, r, c, OPIS, True, U.RAINBOW_URL, cel=U.CEL, linie=["Rainbow (czarter LOT)"]))
+                if kod == "?":
+                    wynik.odcinki.append(Odcinek("rainbow", True, "tam", kod, d, cena, OPIS, True, U.RAINBOW_URL,
+                                                 cel=U.CEL, linie=["Rainbow (czarter LOT)"], rozklad=godziny))
+                else:
+                    wynik.podroze += pary(U, kod, d, cena, godziny, powroty, godz_pow)
         przegladarka.close()
     if wynik.udane == 0:
         wynik.status = "błąd"
