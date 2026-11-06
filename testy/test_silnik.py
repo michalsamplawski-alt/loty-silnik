@@ -245,6 +245,49 @@ def test_itaka_uklad_2026():
     assert itaka.czasy(ITAKA_2026, DZIS)[(D(2026, 12, 28), D(2027, 1, 5))] == (620, 710)
 
 
+def test_google_drugi_krok_powroty(monkeypatch):
+    import base64
+    from fast_flights.pb.flights_pb2 import Info
+    monkeypatch.setattr(google.time, "sleep", lambda s: None)
+    q = google.zapytanie(K, "WAW", "BKK", D(2027, 2, 14), D(2027, 2, 24))
+    k2 = google.Krok2(q, [["WAW", "2027-02-14", "ZRH", "LX", "1349"], ["ZRH", "2027-02-14", "BKK", "LX", "180"]])
+    surowe = base64.b64decode(k2.tfs)
+    info = Info.FromString(surowe)
+    assert [d.from_airport.airport for d in info.data] == ["WAW", "BKK"]   # kolejność kierunków zachowana
+    assert b"1349" in info.data[0].SerializeToString() and b"1349" not in info.data[1].SerializeToString()
+    assert "tfs=" in k2.url() and k2.params()["curr"] == "PLN"
+
+    def lot_pow(cena, *odc, linie=("Austrian",)):
+        return lot(cena, *odc, linie=linie)
+    dobry = lot_pow(4697, ("BKK", "VIE", (2027, 2, 24), (23, 50), (2027, 2, 25), (5, 25), 695),
+                    ("VIE", "WAW", (2027, 2, 25), (8, 10), (2027, 2, 25), (9, 25), 75))
+    za_dluga_przesiadka = lot_pow(4500, ("BKK", "VIE", (2027, 2, 24), (8, 0), (2027, 2, 24), (14, 0), 660),
+                                  ("VIE", "WAW", (2027, 2, 24), (22, 0), (2027, 2, 24), (23, 15), 75))
+
+    class Pob:
+        def __init__(self, odp):
+            self.odp = odp
+
+        def szukaj(self, q):
+            return self.odp
+
+    def bilet():
+        p = Podroz("google", "rejsowy", "WAW", "WAW", D(2027, 2, 14), D(2027, 2, 24), 4697, "przez ZRH", False,
+                   ["g1"], cel="BKK", linie=["SWISS"], przes_tam=[["ZRH", 120]], przes_pow=None, czas_tam=780)
+        p.krok2 = (q, [["WAW", "2027-02-14", "ZRH", "LX", "1349"]])
+        return p
+
+    w = Wynik("google", podroze=[bilet()])
+    google.dopasuj_powroty(w, Pob([za_dluga_przesiadka, dobry]), K, log=lambda *a: None)
+    p = w.podroze[0]
+    assert p.cena == 4697 and p.przes_pow == [["VIE", 165]] and p.linie == ["SWISS", "Austrian"]
+    assert p.rozklad_pow == [["BKK", "23:50", "VIE", "05:25", 1], ["VIE", "08:10", "WAW", "09:25", 1]]
+    assert p.linki[0].startswith("https://www.google.com/travel/flights/search?") and "krok2" not in vars(p)
+    w2 = Wynik("google", podroze=[bilet()])
+    google.dopasuj_powroty(w2, Pob([za_dluga_przesiadka]), K, log=lambda *a: None)
+    assert w2.podroze == []          # żaden powrót nie spełnia kryteriów → bilet odrzucony
+
+
 def test_google_warunki_dla_powrotu():
     # Limity podróży i przesiadek idą do Google dla OBU kierunków (powrót wybiera się w drugim kroku).
     assert google.filtry(K) == {"max_duration_minutes": 17 * 60, "max_layover_minutes": 4 * 60}

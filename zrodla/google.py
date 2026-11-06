@@ -7,12 +7,14 @@ Pobieranie dwutorowe:
 """
 from __future__ import annotations
 
+import base64
 import datetime as dt
+import json
 import os
 import random
 import time
+import urllib.parse
 
-import json
 
 import primp
 from fast_flights import FlightQuery, FlightsNotFound, Passengers, create_query
@@ -38,9 +40,48 @@ def _lot(k) -> Flights | None:
             emisja = CarbonEmission(typical_on_route=lot[22][8], emission=lot[22][7])
         except (IndexError, TypeError):
             emisja = CarbonEmission(0, 0)
-        return Flights(type=lot[0], price=cena, airlines=lot[1], flights=odcinki, carbon=emisja)
+        wynik = Flights(type=lot[0], price=cena, airlines=lot[1], flights=odcinki, carbon=emisja)
+        try:   # numery lotów – potrzebne, żeby „wybrać” ten lot w drugim kroku (powroty)
+            wynik.numery = [[s[3], "%04d-%02d-%02d" % tuple(s[20]), s[6], s[22][0], s[22][1]] for s in lot[2]]
+        except (IndexError, TypeError):
+            wynik.numery = None
+        return wynik
     except (IndexError, TypeError, KeyError):
         return None
+
+
+def _pole(nr: int, dane: bytes) -> bytes:
+    """Pole protobuf typu „length-delimited” (numer pola + długość + dane)."""
+    dl, n = b"", len(dane)
+    while True:
+        b, n = n & 0x7F, n >> 7
+        dl += bytes([b | (0x80 if n else 0)])
+        if not n:
+            return bytes([(nr << 3) | 2]) + dl + dane
+
+
+class Krok2:
+    """Zapytanie o powroty dla wybranego lotu tam (jak kliknięcie lotu tam w Google Flights).
+
+    W danych zapytania pierwszy kierunek dostaje listę wybranych odcinków (pole 4: skąd, data, dokąd,
+    linia, numer lotu). Google odpowiada wtedy listą powrotów z ceną CAŁEGO biletu.
+    """
+
+    def __init__(self, q, numery: list) -> None:
+        self.q = q
+        info = q.pb()
+        wybrane = b"".join(_pole(4, _pole(1, z.encode()) + _pole(2, d.encode()) + _pole(3, do.encode())
+                                 + _pole(5, linia.encode()) + _pole(6, nr.encode()))
+                           for z, d, do, linia, nr in numery)
+        pierwszy = _pole(3, info.data[0].SerializeToString() + wybrane)
+        del info.data[0]
+        self.tfs = base64.b64encode(pierwszy + info.SerializeToString()).decode()
+
+    def params(self) -> dict:
+        return {**self.q.params(), "tfs": self.tfs}
+
+    def url(self) -> str:
+        return URL + "/search?" + urllib.parse.urlencode(self.params())
 
 
 def parse(html: str) -> list[Flights]:
@@ -196,7 +237,7 @@ def ocen(lot, U) -> dict | None:
     return {"cena": int(lot.price), "bezposredni": not porty,
             "opis": ("★ " if ulubione else "") + f"{trasa} · {linie} · {godz(czas)}",
             "linie": list(lot.airlines or []), "przesiadki": [[p, m] for p, m in zip(porty, przerwy)],
-            "czas": czas, "rozklad": rozklad(odcinki)}
+            "czas": czas, "rozklad": rozklad(odcinki), "numery": getattr(lot, "numery", None)}
 
 
 def rozklad(odcinki) -> list:
@@ -243,6 +284,66 @@ def zadania(okna, U, dzis: dt.date, test: bool = False) -> list[tuple]:
     return rt + jedna
 
 
+MAKS_KROK2 = 300
+
+
+def dopasuj_powroty(wynik: Wynik, pob, U, test: bool = False, log=print) -> None:
+    """Bilety w obie strony: dopytuje Google o lot powrotny (drugi krok) dla każdego znalezionego lotu tam.
+
+    Zostaje najtańszy powrót spełniający kryteria (przesiadki, czas, wykluczone lotniska i linie) –
+    z jego godzinami i ceną całego biletu. Gdy żaden powrót nie pasuje, bilet znika z wyników.
+    Gdy Google nie odpowie, bilet zostaje z nieznanym powrotem (jak dotąd).
+    """
+    rt = [p for p in wynik.podroze if getattr(p, "krok2", None) and p.krok2[1]]
+    rt.sort(key=lambda p: p.cena)
+    rt = rt[:2] if test else rt[:MAKS_KROK2]
+    if not rt:
+        return
+    log(f"Google: dopasowuję powroty dla {len(rt)} biletów w obie strony")
+    usun, nieznane = set(), 0
+    for i, p in enumerate(rt, 1):
+        q, numery = p.krok2
+        k2 = Krok2(q, numery)
+        wynik.zapytania += 1
+        try:
+            powroty = pob.szukaj(k2)
+            wynik.udane += 1
+        except FlightsNotFound:
+            powroty = []
+            wynik.udane += 1
+        except Exception as e:
+            log(f"  powrót {p.trasa}: NIEUDANE ({type(e).__name__})")
+            nieznane += 1
+            continue
+        oceny = []
+        for lot in powroty:
+            try:
+                o = ocen(lot, U)
+            except Exception:
+                o = None
+            if o:
+                oceny.append(o)
+        if not oceny:
+            usun.add(id(p))
+            continue
+        o = min(oceny, key=lambda x: x["cena"])
+        p.cena = o["cena"]
+        p.przes_pow, p.czas_pow, p.rozklad_pow = o["przesiadki"], o["czas"], o["rozklad"]
+        p.bezposredni = p.bezposredni and o["bezposredni"]
+        p.linie = list(dict.fromkeys(p.linie + o["linie"]))
+        p.opis = f"tam: {p.opis}; powrót: {o['opis']}"
+        p.linki = [k2.url()]
+        if i % 20 == 0:
+            log(f"  powroty {i}/{len(rt)}")
+        if i < len(rt):
+            time.sleep(random.uniform(*U.PRZERWA_SEK))
+    wynik.podroze = [p for p in wynik.podroze if id(p) not in usun]
+    for p in wynik.podroze:
+        p.__dict__.pop("krok2", None)
+    log(f"Google: powroty dopasowane; odrzucone (brak powrotu spełniającego kryteria): {len(usun)}"
+        + (f"; bez odpowiedzi: {nieznane}" if nieznane else ""))
+
+
 def pobierz(okna, U, dzis: dt.date, test: bool = False, log=print) -> Wynik:
     wynik = Wynik("google")
     pob = Pobieracz()
@@ -267,10 +368,12 @@ def pobierz(okna, U, dzis: dt.date, test: bool = False, log=print) -> Wynik:
             naj = bez = None
         for o in {id(x): x for x in (naj, bez) if x}.values():
             if typ == "rt":
-                wynik.podroze.append(Podroz("google", "rejsowy", lot, lot, d, r, o["cena"], o["opis"],
-                                            o["bezposredni"], [q.url()], cel=cel, linie=o["linie"],
-                                            przes_tam=o["przesiadki"], przes_pow=None, czas_tam=o["czas"],
-                                            rozklad_tam=o["rozklad"]))
+                podr = Podroz("google", "rejsowy", lot, lot, d, r, o["cena"], o["opis"],
+                              o["bezposredni"], [q.url()], cel=cel, linie=o["linie"],
+                              przes_tam=o["przesiadki"], przes_pow=None, czas_tam=o["czas"],
+                              rozklad_tam=o["rozklad"])
+                podr.krok2 = (q, o["numery"])
+                wynik.podroze.append(podr)
             else:
                 wynik.odcinki.append(Odcinek("google", False, typ, lot, d, o["cena"], o["opis"],
                                              o["bezposredni"], q.url(), cel=cel, linie=o["linie"],
@@ -280,6 +383,7 @@ def pobierz(okna, U, dzis: dt.date, test: bool = False, log=print) -> Wynik:
             log(f"  {i}/{len(lista)} (udane {wynik.udane}, tryb: {pob.tryb})")
         if i < len(lista):
             time.sleep(random.uniform(*U.PRZERWA_SEK))
+    dopasuj_powroty(wynik, pob, U, test, log)
     if wynik.udane == 0:
         wynik.status = "błąd"
         wynik.uwaga = "Google odrzucił wszystkie zapytania" + (
