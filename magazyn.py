@@ -163,8 +163,8 @@ def _teraz() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
-def wyjazdy(db: Dropbox) -> list[dict]:
-    """Aktywne wyjazdy z najnowszych kryteriów; przy okazji sprząta stare wersje i usunięte wyjazdy."""
+def wyjazdy(db: Dropbox, sprzataj: bool = True) -> list[dict]:
+    """Aktywne wyjazdy z najnowszych kryteriów; przy okazji (sprzataj=True) sprząta stare wersje i usunięte wyjazdy."""
     pliki: dict[str, list[dict]] = {}
     for w in db.lista(sciezka("wyjazdy")):
         if w.get(".tag") != "file" or not w["name"].startswith("kryteria-"):
@@ -176,11 +176,14 @@ def wyjazdy(db: Dropbox) -> list[dict]:
     for id_, lista in pliki.items():
         lista.sort(key=lambda w: w["name"])
         kryteria = _json(db.pobierz(_sciezka_wpisu(lista[-1])), None)
-        for stary in lista[:-ZACHOWAJ_WERSJI]:
-            db.usun(_sciezka_wpisu(stary))
+        if sprzataj:
+            for stary in lista[:-ZACHOWAJ_WERSJI]:
+                db.usun(_sciezka_wpisu(stary))
         if not kryteria:
             continue
         if kryteria.get("usuniety"):
+            if not sprzataj:
+                continue
             db.usun(sciezka("wyjazdy", id_))
             db.usun(sciezka("wyniki", id_))
             continue

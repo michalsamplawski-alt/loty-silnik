@@ -8,18 +8,46 @@ on:
     - cron: "7 * * * *"    # co godzinę: „Sprawdź teraz” z aplikacji i zapas dla porannego
   workflow_dispatch:
 
-concurrency:
-  group: loty
-  cancel-in-progress: false
+env:
+  DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY }}
+  DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
+  DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
 
 jobs:
-  sprawdz:
+  # Krótka decyzja i lista wyjazdów. Zlecenia „Sprawdź teraz” są tu od razu przyjmowane.
+  plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
-    env:
-      DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY }}
-      DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
-      DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
+    timeout-minutes: 10
+    concurrency:
+      group: loty-plan
+      cancel-in-progress: false
+    outputs:
+      uruchom: ${{ steps.decyzja.outputs.uruchom }}
+      powod: ${{ steps.decyzja.outputs.powod }}
+      wyjazdy: ${{ steps.decyzja.outputs.wyjazdy }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Czy sprawdzać teraz
+        id: decyzja
+        run: python czy_sprawdzac.py
+
+  # Każdy wyjazd w osobnym, równoległym zadaniu – jeden długi wyjazd nie blokuje pozostałych.
+  sprawdz:
+    needs: plan
+    if: needs.plan.outputs.uruchom == 'tak'
+    name: ${{ matrix.wyjazd }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        wyjazd: ${{ fromJSON(needs.plan.outputs.wyjazdy) }}
+    concurrency:
+      group: loty-${{ matrix.wyjazd }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
@@ -27,23 +55,17 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Czy sprawdzać teraz
-        id: decyzja
-        run: python czy_sprawdzac.py
-
       - name: Instalacja
-        if: steps.decyzja.outputs.uruchom == 'tak'
         run: |
           pip install -r requirements.txt
           python -m playwright install --with-deps chromium
 
       - name: Testy logiki
-        if: steps.decyzja.outputs.uruchom == 'tak'
         run: python -m pytest -q testy
 
-      - name: Sprawdzenie cen dla wyjazdów z aplikacji
-        if: steps.decyzja.outputs.uruchom == 'tak'
+      - name: Sprawdzenie cen
         env:
+          WYJAZD: ${{ matrix.wyjazd }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
@@ -51,5 +73,18 @@ jobs:
           MAIL_TO: ${{ secrets.MAIL_TO }}
           BRIGHT_DATA_API_KEY: ${{ secrets.BRIGHT_DATA_API_KEY }}
           BRIGHT_DATA_ZONE: ${{ secrets.BRIGHT_DATA_ZONE }}
-          POWOD: ${{ steps.decyzja.outputs.powod }}
-        run: python narzedzie.py
+        run: python narzedzie.py --wyjazd "$WYJAZD"
+
+  # Znacznik końca – aplikacja przestaje pokazywać „Trwa nowe sprawdzenie”.
+  koniec:
+    needs: [plan, sprawdz]
+    if: always() && needs.plan.outputs.uruchom == 'tak'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Zapis końca sprawdzania
+        run: python czy_sprawdzac.py --koniec

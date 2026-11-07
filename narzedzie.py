@@ -361,41 +361,53 @@ def wyslij_mail(mail: dict) -> bool:
     return True
 
 
-def tryb_aplikacji(dzis: dt.date) -> None:
+def sprawdz_wyjazd(db, w: dict, dzis: dt.date) -> bool:
+    """Sprawdza jeden wyjazd i zapisuje wyniki; True, gdy się nie udało."""
+    import magazyn
+    print(f"\n=== {w.get('nazwa')} ===")
+    try:
+        K = ustawienia(w.get("ustawienia"))
+        okna = wczytaj_okna(K, dzis)
+        if not okna:
+            magazyn.zapisz_wyniki(db, w["id"], {"najnowsze": {
+                "data": dzis.isoformat(), "koniec": True, "zrodla": {}, "okna": [],
+                "temat": "Wszystkie zakresy dat już minęły"}, "historia_dzis": [], "zdrowie": w.get("zdrowie") or {}})
+            print("Zakresy dat minęły – pomijam.")
+            return False
+        wyniki = zbierz(K, okna, dzis)
+        zdrowie = aktualizuj_zdrowie(w.get("zdrowie") or {}, wyniki, dzis)
+        wynik = przeanalizuj(K, okna, wyniki, dzis, w.get("historia") or [], zdrowie)
+        wynik["zdrowie"] = zdrowie
+        magazyn.zapisz_wyniki(db, w["id"], wynik)
+        try:
+            wyslano = wyslij_mail(wynik["mail"])
+        except Exception as e:
+            wyslano = False
+            print(f"Mail nie wyszedł: {type(e).__name__}: {e}")
+        print("Zapisano w Dropboxie.", "Mail wysłany." if wyslano else "Bez maila.")
+        return bool(wyniki) and all(x.status == "błąd" for x in wyniki.values())
+    except Exception as e:
+        print(f"BŁĄD wyjazdu {w.get('nazwa')}: {type(e).__name__}: {e}")
+        return True
+
+
+def tryb_aplikacji(dzis: dt.date, tylko: str | None = None) -> None:
     import magazyn
     db = magazyn.Dropbox()
+    if tylko:
+        # jedno z równoległych zadań GitHub Actions (osobne zadanie dla każdego wyjazdu)
+        lista = [w for w in magazyn.wyjazdy(db, sprzataj=False) if w["id"] == tylko]
+        if not lista:
+            print(f"Wyjazd {tylko} nie jest już aktywny – pomijam.")
+            return
+        if sprawdz_wyjazd(db, lista[0], dzis):
+            sys.exit(1)
+        return
     magazyn.przygotuj(db)
     zlecone = magazyn.zlecenia(db)
     lista = magazyn.wyjazdy(db)
     print(f"Aktywnych wyjazdów: {len(lista)}" + (f", zleceń „Sprawdź teraz”: {len(zlecone)}" if zlecone else ""))
-    nieudane = 0
-    for w in lista:
-        print(f"\n=== {w.get('nazwa')} ===")
-        try:
-            K = ustawienia(w.get("ustawienia"))
-            okna = wczytaj_okna(K, dzis)
-            if not okna:
-                magazyn.zapisz_wyniki(db, w["id"], {"najnowsze": {
-                    "data": dzis.isoformat(), "koniec": True, "zrodla": {}, "okna": [],
-                    "temat": "Wszystkie zakresy dat już minęły"}, "historia_dzis": [], "zdrowie": w.get("zdrowie") or {}})
-                print("Zakresy dat minęły – pomijam.")
-                continue
-            wyniki = zbierz(K, okna, dzis)
-            zdrowie = aktualizuj_zdrowie(w.get("zdrowie") or {}, wyniki, dzis)
-            wynik = przeanalizuj(K, okna, wyniki, dzis, w.get("historia") or [], zdrowie)
-            wynik["zdrowie"] = zdrowie
-            magazyn.zapisz_wyniki(db, w["id"], wynik)
-            try:
-                wyslano = wyslij_mail(wynik["mail"])
-            except Exception as e:
-                wyslano = False
-                print(f"Mail nie wyszedł: {type(e).__name__}: {e}")
-            print("Zapisano w Dropboxie.", "Mail wysłany." if wyslano else "Bez maila.")
-            if wyniki and all(x.status == "błąd" for x in wyniki.values()):
-                nieudane += 1
-        except Exception as e:
-            nieudane += 1
-            print(f"BŁĄD wyjazdu {w.get('nazwa')}: {type(e).__name__}: {e}")
+    nieudane = sum(sprawdz_wyjazd(db, w, dzis) for w in lista)
     for z in zlecone:
         db.usun(z)
     zmiany = {"przebieg_koniec": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")}
@@ -419,7 +431,8 @@ def main() -> None:
     lokalnie = any(a in sys.argv for a in ("--lokalnie", "--test-zrodel", "--zrzut")) or not (
         os.environ.get("DROPBOX_REFRESH_TOKEN") or os.environ.get("DROPBOX_TOKEN"))
     if not lokalnie:
-        tryb_aplikacji(dzis)
+        tylko = sys.argv[sys.argv.index("--wyjazd") + 1] if "--wyjazd" in sys.argv else None
+        tryb_aplikacji(dzis, tylko)
         return
     import ustawienia as U
     K = ustawienia({k: getattr(U, k) for k in dir(U) if k.isupper()})
