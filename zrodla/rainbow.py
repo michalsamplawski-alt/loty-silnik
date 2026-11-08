@@ -13,6 +13,7 @@ import html as html_mod
 import re
 from pathlib import Path
 
+from . import czartery
 from .wspolne import MIESIACE, SKROTY_MIESIECY, Odcinek, Podroz, Wynik, rok_dla_miesiaca
 
 DZIEN_TYG = r"(?:pon|pn|wt|śr|czw|pt|sob|niedz|ndz|nd)\.?"
@@ -135,14 +136,15 @@ def _przycisk(strona, napisy):
     return None
 
 
-def pary(U, kod: str, wylot: dt.date, cena_tam: int, godz_tam, powroty: dict[dt.date, int], godz_pow) -> list[Podroz]:
+def pary(U, kod: str, wylot: dt.date, cena_tam: int, godz_tam, powroty: dict[dt.date, int], godz_pow,
+         url: str | None = None, cel: str | None = None) -> list[Podroz]:
     """Gotowe podróże tam i z powrotem z jednego kliknięcia dnia.
 
     Ceny na tej stronie dotyczą trybu „w obie strony”: wylot i powrót są do kupienia tylko razem
     (cena = wylot + powrót), więc nie łączymy ich z biletami innych przewoźników.
     """
-    return [Podroz("rainbow", "czarter", kod, kod, wylot, r, cena_tam + c, OPIS, True, [U.RAINBOW_URL],
-                   cel=U.CEL, linie=["Rainbow (czarter LOT)"], rozklad_tam=godz_tam,
+    return [Podroz("rainbow", "czarter", kod, kod, wylot, r, cena_tam + c, OPIS, True, [url or U.RAINBOW_URL],
+                   cel=cel or U.CEL, linie=["Rainbow (czarter LOT)"], rozklad_tam=godz_tam,
                    rozklad_pow=godz_pow if nr == 0 else None)
             for nr, (r, c) in enumerate(powroty.items())]
 
@@ -178,55 +180,69 @@ def _zamknij_okno_ciasteczek(strona, czekaj_ms: int = 8000) -> None:
         strona.wait_for_timeout(500)
 
 
-def _przegladarka(okna, U, dzis: dt.date, test: bool, log) -> Wynik:
+def _jedna_strona(strona, adres: str, cel: str, okna, U, dzis: dt.date, test: bool, log, wynik: Wynik) -> None:
+    """Klika dni z Twoich zakresów na jednej stronie kierunku i dopisuje podróże do wyniku."""
+    kody_celu = set(czartery.cele(U)) | {cel}
+    strona.goto(adres, wait_until="domcontentloaded", timeout=60000)
+    _zamknij_okno_ciasteczek(strona)
+    strona.wait_for_timeout(3000)
+    wyloty = lista_cen(podziel(strona.inner_text("body"))[0], dzis)
+    dni = [d for d in sorted(wyloty) if any(o.dobry_wylot(d, dzis) for o in okna)]
+    if test:
+        dni = dni[:2]
+    log(f"Rainbow {adres.rsplit('/', 1)[-1]}: {len(wyloty)} dni wylotu na stronie, w Twoich zakresach: {len(dni)}")
+    for d in dni:
+        wynik.zapytania += 1
+        wzor = re.compile(rf"\b0?{d.day}\s+{SKROTY_MIESIECY[d.month]}\b")
+        try:
+            strona.get_by_text(wzor).first.click(timeout=10000)
+            strona.wait_for_timeout(2500)
+        except Exception as e:
+            log(f"  {d}: nie udało się kliknąć ({type(e).__name__})")
+            continue
+        tekst = strona.inner_text("body")
+        loty = karty(tekst, U.NAZWY_LOTNISK) or [(lotnisko_wylotu(tekst, d, U.NAZWY_LOTNISK) or "?", wyloty[d], None)]
+        wynik.udane += 1
+        for i, (kod, cena, godziny) in enumerate(loty):
+            if kod != "?" and kod not in U.LOTNISKA_WYLOTU:
+                log(f"  {d}: {kod}, {cena} zł – lotnisko spoza kryteriów")
+                continue
+            dokad = godziny[0][2] if godziny else cel
+            if dokad not in kody_celu:
+                log(f"  {d}: {kod}→{dokad} – inne lotnisko docelowe niż w kryteriach")
+                continue
+            if i > 0:   # powroty pokazują się dla zaznaczonego lotu – zaznacz kolejną kartę
+                try:
+                    strona.get_by_text(re.compile(rf"\({kod}\)")).first.click(timeout=10000)
+                    strona.wait_for_timeout(2000)
+                    tekst = strona.inner_text("body")
+                except Exception as e:
+                    log(f"  {d}: {kod} – nie udało się zaznaczyć ({type(e).__name__})")
+                    continue
+            powroty = lista_cen(podziel(tekst)[1], dzis)
+            godz_pow = godziny_powrotu(tekst)     # karta pokazuje pierwszy (zaznaczony) powrót
+            log(f"  {d}: {kod}→{dokad}, {cena} zł, powrotów: {len(powroty)}")
+            if kod == "?":
+                wynik.odcinki.append(Odcinek("rainbow", True, "tam", kod, d, cena, OPIS, True, adres,
+                                             cel=dokad, linie=["Rainbow (czarter LOT)"], rozklad=godziny))
+            else:
+                wynik.podroze += pary(U, kod, d, cena, godziny, powroty, godz_pow, url=adres, cel=dokad)
+
+
+def _przegladarka(adresy, okna, U, dzis: dt.date, test: bool, log) -> Wynik:
     from playwright.sync_api import sync_playwright
 
     wynik = Wynik("rainbow")
     with sync_playwright() as p:
         przegladarka = p.chromium.launch()
         strona = przegladarka.new_page(locale="pl-PL", viewport={"width": 1400, "height": 2400})
-        strona.goto(U.RAINBOW_URL, wait_until="domcontentloaded", timeout=60000)
-        _zamknij_okno_ciasteczek(strona)
-        strona.wait_for_timeout(3000)
-        wyloty = lista_cen(podziel(strona.inner_text("body"))[0], dzis)
-        dni = [d for d in sorted(wyloty) if any(o.dobry_wylot(d, dzis) for o in okna)]
-        if test:
-            dni = dni[:2]
-        log(f"Rainbow: {len(wyloty)} dni wylotu na stronie, w Twoich zakresach: {len(dni)}")
-        for d in dni:
-            wynik.zapytania += 1
-            wzor = re.compile(rf"\b0?{d.day}\s+{SKROTY_MIESIECY[d.month]}\b")
+        for adres, cel in adresy:
             try:
-                strona.get_by_text(wzor).first.click(timeout=10000)
-                strona.wait_for_timeout(2500)
+                _jedna_strona(strona, adres, cel, okna, U, dzis, test, log, wynik)
             except Exception as e:
-                log(f"  {d}: nie udało się kliknąć ({type(e).__name__})")
-                continue
-            tekst = strona.inner_text("body")
-            loty = karty(tekst, U.NAZWY_LOTNISK) or [(lotnisko_wylotu(tekst, d, U.NAZWY_LOTNISK) or "?", wyloty[d], None)]
-            wynik.udane += 1
-            for i, (kod, cena, godziny) in enumerate(loty):
-                if kod != "?" and kod not in U.LOTNISKA_WYLOTU:
-                    log(f"  {d}: {kod}, {cena} zł – lotnisko spoza kryteriów")
-                    continue
-                if i > 0:   # powroty pokazują się dla zaznaczonego lotu – zaznacz kolejną kartę
-                    try:
-                        strona.get_by_text(re.compile(rf"\({kod}\)")).first.click(timeout=10000)
-                        strona.wait_for_timeout(2000)
-                        tekst = strona.inner_text("body")
-                    except Exception as e:
-                        log(f"  {d}: {kod} – nie udało się zaznaczyć ({type(e).__name__})")
-                        continue
-                powroty = lista_cen(podziel(tekst)[1], dzis)
-                godz_pow = godziny_powrotu(tekst)     # karta pokazuje pierwszy (zaznaczony) powrót
-                log(f"  {d}: {kod}, {cena} zł, powrotów: {len(powroty)}")
-                if kod == "?":
-                    wynik.odcinki.append(Odcinek("rainbow", True, "tam", kod, d, cena, OPIS, True, U.RAINBOW_URL,
-                                                 cel=U.CEL, linie=["Rainbow (czarter LOT)"], rozklad=godziny))
-                else:
-                    wynik.podroze += pary(U, kod, d, cena, godziny, powroty, godz_pow)
+                log(f"Rainbow {adres}: błąd {type(e).__name__}: {e}")
         przegladarka.close()
-    if wynik.udane == 0:
+    if wynik.udane == 0 and wynik.zapytania > 0:
         wynik.status = "błąd"
         wynik.uwaga = "nie odczytano żadnego dnia"
     elif any(o.lotnisko == "?" for o in wynik.odcinki):
@@ -235,33 +251,41 @@ def _przegladarka(okna, U, dzis: dt.date, test: bool, log) -> Wynik:
     return wynik
 
 
-def _awaryjnie(okna, U, dzis: dt.date, log) -> Wynik:
+def _awaryjnie(adresy, okna, U, dzis: dt.date, log) -> Wynik:
     import primp
 
-    wynik = Wynik("rainbow", zapytania=1, status="częściowo",
+    wynik = Wynik("rainbow", status="częściowo",
                   uwaga="tryb awaryjny: tylko ceny wylotów, bez lotniska i powrotów")
-    strona = primp.Client(impersonate="chrome_145", impersonate_os="macos", timeout=40).get(U.RAINBOW_URL).text
-    wyloty = lista_cen(podziel(tekst_z_html(strona))[0], dzis)
-    for d, c in wyloty.items():
-        if any(o.dobry_wylot(d, dzis) for o in okna):
-            wynik.odcinki.append(Odcinek("rainbow", True, "tam", "?", d, c, OPIS, True, U.RAINBOW_URL, cel=U.CEL, linie=["Rainbow (czarter LOT)"]))
-    if wyloty:
-        wynik.udane = 1
-    else:
+    klient = primp.Client(impersonate="chrome_145", impersonate_os="macos", timeout=40)
+    for adres, cel in adresy:
+        wynik.zapytania += 1
+        wyloty = lista_cen(podziel(tekst_z_html(klient.get(adres).text))[0], dzis)
+        if wyloty:
+            wynik.udane += 1
+        for d, c in wyloty.items():
+            if any(o.dobry_wylot(d, dzis) for o in okna):
+                wynik.odcinki.append(Odcinek("rainbow", True, "tam", "?", d, c, OPIS, True, adres, cel=cel,
+                                             linie=["Rainbow (czarter LOT)"]))
+    if not wynik.udane:
         wynik.status, wynik.uwaga = "błąd", "nie odczytano cen (zmiana strony?)"
     return wynik
 
 
-def pobierz(okna, U, dzis: dt.date, test: bool = False, log=print) -> Wynik:
+def pobierz(okna, U, dzis: dt.date, test: bool = False, log=print) -> Wynik | None:
+    adresy = czartery.rainbow_adresy(U, log)
+    if not adresy:
+        log("Rainbow: brak czarterów do lotnisk docelowych tego wyjazdu")
+        return None
+    log(f"Rainbow: kierunki do sprawdzenia: {', '.join(a.rsplit('/', 1)[-1] for a, _ in adresy)}")
     try:
-        wynik = _przegladarka(okna, U, dzis, test, log)
+        wynik = _przegladarka(adresy, okna, U, dzis, test, log)
         if wynik.status != "błąd":
             return wynik
         log(f"Rainbow: przeglądarka – {wynik.uwaga}; przechodzę w tryb awaryjny")
     except Exception as e:
         log(f"Rainbow: przeglądarka – błąd {type(e).__name__}: {e}; przechodzę w tryb awaryjny")
     try:
-        return _awaryjnie(okna, U, dzis, log)
+        return _awaryjnie(adresy, okna, U, dzis, log)
     except Exception as e:
         return Wynik("rainbow", status="błąd", uwaga=f"{type(e).__name__}: {e}")
 
@@ -274,7 +298,7 @@ def zrzut(U, katalog: Path) -> None:
     with sync_playwright() as p:
         b = p.chromium.launch()
         s = b.new_page(locale="pl-PL", viewport={"width": 1400, "height": 2400})
-        s.goto(U.RAINBOW_URL, wait_until="domcontentloaded", timeout=60000)
+        s.goto((czartery.rainbow_adresy(U) or [(U.RAINBOW_URL, "")])[0][0], wait_until="domcontentloaded", timeout=60000)
         _zamknij_okno_ciasteczek(s)
         s.wait_for_timeout(3000)
         (katalog / "rainbow.txt").write_text(s.inner_text("body"), encoding="utf-8")

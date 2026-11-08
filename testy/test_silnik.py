@@ -1,6 +1,7 @@
 import datetime as dt
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -385,3 +386,37 @@ def test_analiza_dla_aplikacji():
     assert w2["najnowsze"]["okna"][0]["poza_budzetem"]["cena"] == 4100
     import json
     json.dumps(w)   # dane muszą dać się wysłać do aplikacji
+
+
+def test_czartery_automatyczne_kierunki():
+    from zrodla import czartery
+    mapa = ("<urlset><url><loc>https://r.pl/bilety-czarterowe/tajlandia/phuket</loc></url>"
+            "<url><loc>https://r.pl/bilety-czarterowe/tajlandia/bangkok</loc></url>"
+            "<url><loc>https://r.pl/bilety-czarterowe/indie/new-delhi</loc></url>"
+            "<url><loc>https://r.pl/bilety-czarterowe/hiszpania/palma-de-mallorca</loc></url>"
+            "<url><loc>https://r.pl/bilety-czarterowe/hiszpania/puerto-del-rosario</loc></url>"
+            "<url><loc>https://r.pl/bilety-czarterowe/polska/warszawa</loc></url>"
+            "<url><loc>https://r.pl/bilety-czarterowe/tajlandia</loc></url></urlset>")
+    kier = czartery.rainbow_kierunki(mapa)
+    assert "polska/warszawa" not in kier and "tajlandia/phuket" in kier and len(kier) == 5
+    assert czartery.rainbow_dopasuj(kier, ["BKK", "HKT", "KBV"]) == [
+        ("https://r.pl/bilety-czarterowe/tajlandia/bangkok", "BKK"),
+        ("https://r.pl/bilety-czarterowe/tajlandia/phuket", "HKT")]
+    assert czartery.rainbow_dopasuj(kier, ["JFK"]) == []                 # „New York” to nie „New Delhi”
+    assert [k for _, k in czartery.rainbow_dopasuj(kier, ["PMI", "FUE"])] == ["PMI", "FUE"]
+    html = r'{\"phuket\":{\"name\":\"Phuket\",\"iataCode\":\"HKT\"},\"krabi\":{\"iataCode\":\"KBV\",\"to\":\"do Krabi\"}}'
+    assert czartery.itaka_kierunki(html) == {"HKT": "phuket", "KBV": "krabi"}
+    U = SimpleNamespace(CEL="BKK", CELE_DODATKOWE=["KBV"], CZARTERY_AUTO=True,
+                        ITAKA_URL="https://www.itaka.pl/bilety-lotnicze/warszawa-do-bangkok/")
+    assert czartery.itaka_adresy(html, U) == [("https://www.itaka.pl/bilety-lotnicze/krabi/", "KBV"),
+                                              ("https://www.itaka.pl/bilety-lotnicze/warszawa-do-bangkok/", "BKK")]
+
+
+def test_itaka_lotnisko_wylotu_z_karty():
+    tekst = ("Wylot: sobota, 14 lis\nKatowice 09:55\n(KTW)\n5godz. 45min.\nMadera - Funchal 14:40\n(FNC)\n"
+             "Powrót: sobota, 21 lis\nMadera - Funchal 15:00\n(FNC)\n5godz. 5min.\nKatowice 21:05\n(KTW)\n1 050 zł\n/os.\n"
+             "Wylot: sobota, 14 lis\nGdańsk 08:00\n(GDN)\n5godz. 45min.\nMadera - Funchal 13:00\n(FNC)\n"
+             "Powrót: sobota, 21 lis\nMadera - Funchal 15:00\n(FNC)\n5godz. 5min.\nGdańsk 21:05\n(GDN)\n999 zł\n/os.\n")
+    U = SimpleNamespace(LOTNISKA_WYLOTU=["KTW", "WAW"], ITAKA_LOTNISKO="WAW")
+    p = itaka.podroze_ze_strony(tekst, "https://www.itaka.pl/bilety-lotnicze/funchal/", "FNC", U, dt.date(2026, 11, 1))
+    assert [(x.lotnisko_wylotu, x.cel, x.cena, x.wylot) for x in p] == [("KTW", "FNC", 1050, dt.date(2026, 11, 14))]

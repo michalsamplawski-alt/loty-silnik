@@ -1,4 +1,4 @@
-"""Czartery Itaki z Warszawy (sam przelot, sprzedawany w obie strony).
+"""Czartery Itaki (sam przelot, sprzedawany w obie strony) – z każdego lotniska, z którego lata Itaka.
 
 Itaka lata w poniedziałki, powrót we wtorek tydzień lub dwa później – dlatego zapisujemy
 też terminy krótsze o jedną noc od wymaganej, żeby raport mógł je pokazać jako „prawie”.
@@ -9,6 +9,7 @@ import datetime as dt
 import re
 from pathlib import Path
 
+from . import czartery
 from .wspolne import MIESIACE, Podroz, Wynik, rok_dla_miesiaca
 
 MIES = "|".join(MIESIACE)
@@ -95,55 +96,103 @@ def terminy(tekst: str, dzis: dt.date | None = None) -> dict[tuple[dt.date, dt.d
     return wyniki
 
 
-def _tekst_strony(U) -> str:
+def _czytaj(s, url: str) -> str:
+    s.goto(url, wait_until="domcontentloaded", timeout=60000)
+    s.wait_for_timeout(4000)
+    for _ in range(5):                       # dociągnij leniwie ładowane terminy
+        s.mouse.wheel(0, 3000)
+        s.wait_for_timeout(700)
+    return s.inner_text("body")
+
+
+def _teksty_stron(U, log=print) -> list[tuple[str, str, str]]:
+    """[(adres, kod lotniska docelowego, tekst wszystkich stron wyników), …] dla każdego kierunku."""
     from playwright.sync_api import sync_playwright
 
     from .rainbow import _zamknij_okno_ciasteczek
-    def czytaj(s, url: str) -> str:
-        s.goto(url, wait_until="domcontentloaded", timeout=60000)
-        s.wait_for_timeout(4000)
-        for _ in range(5):                       # dociągnij leniwie ładowane terminy
-            s.mouse.wheel(0, 3000)
-            s.wait_for_timeout(700)
-        return s.inner_text("body")
-
+    wynik = []
     with sync_playwright() as p:
         b = p.chromium.launch()
         s = b.new_page(locale="pl-PL", viewport={"width": 1400, "height": 2400})
-        s.goto(U.ITAKA_URL, wait_until="domcontentloaded", timeout=60000)
-        _zamknij_okno_ciasteczek(s)
-        teksty = [czytaj(s, U.ITAKA_URL)]
-        stron = int(m.group(1)) if (m := STRONY.search(teksty[0])) else 1
-        znak = "&" if "?" in U.ITAKA_URL else "?"
-        for nr in range(2, min(stron, MAKS_STRON) + 1):   # kolejne strony wyników: ?page=2, 3…
-            teksty.append(czytaj(s, f"{U.ITAKA_URL}{znak}page={nr}"))
+        html_listy = None
+        if czartery.auto(U):
+            try:
+                s.goto(czartery.ITAKA_LISTA, wait_until="domcontentloaded", timeout=60000)
+                _zamknij_okno_ciasteczek(s)
+                s.wait_for_timeout(2000)
+                html_listy = s.content()
+            except Exception as e:
+                log(f"Itaka: nie udało się pobrać listy kierunków ({type(e).__name__}) – tylko adres z kryteriów")
+        adresy = czartery.itaka_adresy(html_listy, U, log)
+        if not adresy:
+            b.close()
+            return []
+        log(f"Itaka: kierunki do sprawdzenia: {', '.join(a.rstrip('/').rsplit('/', 1)[-1] for a, _ in adresy)}")
+        if html_listy is None:
+            s.goto(adresy[0][0], wait_until="domcontentloaded", timeout=60000)
+            _zamknij_okno_ciasteczek(s)
+        for adres, cel in adresy:
+            try:
+                teksty = [_czytaj(s, adres)]
+                stron = int(m.group(1)) if (m := STRONY.search(teksty[0])) else 1
+                znak = "&" if "?" in adres else "?"
+                for nr in range(2, min(stron, MAKS_STRON) + 1):   # kolejne strony wyników: ?page=2, 3…
+                    teksty.append(_czytaj(s, f"{adres}{znak}page={nr}"))
+                wynik.append((adres, cel, "\n".join(teksty)))
+            except Exception as e:
+                log(f"Itaka {adres}: błąd {type(e).__name__}: {e}")
         b.close()
-    return "\n".join(teksty)
+    return wynik
 
 
-def pobierz(okna, U, dzis: dt.date, test: bool = False, log=print) -> Wynik:
-    wynik = Wynik("itaka", zapytania=1)
+def podroze_ze_strony(tekst: str, adres: str, cel: str, U, dzis: dt.date) -> list[Podroz]:
+    """Podróże z jednej strony kierunku – lotnisko wylotu i docelowe z kart lotu (Itaka lata z wielu miast)."""
+    najlepsze: dict[tuple, tuple] = {}
+    for (w, r), c, tam, pow_, ct, cp in _oferty(tekst, dzis):
+        skad = tam[0][0] if tam else U.ITAKA_LOTNISKO
+        dokad = tam[-1][2] if tam else cel
+        klucz = (skad, dokad, w, r)
+        if klucz not in najlepsze or c < najlepsze[klucz][0]:
+            najlepsze[klucz] = (c, tam, pow_, ct, cp)
+    if not najlepsze:   # starszy układ strony – bez kart, tylko daty i ceny
+        for (w, r), c in terminy(tekst, dzis).items():
+            najlepsze[(U.ITAKA_LOTNISKO, cel, w, r)] = (c, None, None, None, None)
+    wynik = []
+    for (skad, dokad, w, r), (c, tam, pow_, ct, cp) in najlepsze.items():
+        if w <= dzis or skad not in set(U.LOTNISKA_WYLOTU) | {U.ITAKA_LOTNISKO}:
+            continue
+        wynik.append(Podroz("itaka", "czarter", skad, skad, w, r, c, OPIS, True, [adres], cel=dokad,
+                            linie=["Itaka (czarter LOT)"], rozklad_tam=tam, rozklad_pow=pow_,
+                            czas_tam=ct, czas_pow=cp))
+    return wynik
+
+
+def pobierz(okna, U, dzis: dt.date, test: bool = False, log=print) -> Wynik | None:
     try:
-        tekst = _tekst_strony(U)
-        lista, rozklady, minuty = terminy(tekst, dzis), godziny(tekst, dzis), czasy(tekst, dzis)
+        strony = _teksty_stron(U, log)
     except Exception as e:
         return Wynik("itaka", zapytania=1, status="błąd", uwaga=f"{type(e).__name__}: {e}")
-    log(f"Itaka: odczytano {len(lista)} terminów")
-    if not lista:
+    if not strony:
+        log("Itaka: brak czarterów do lotnisk docelowych tego wyjazdu")
+        return None
+    wynik = Wynik("itaka", zapytania=len(strony))
+    jest: dict[tuple, Podroz] = {}   # ten sam lot z kilku stron (np. „bangkok” i „warszawa-do-bangkok”) – raz
+    for adres, cel, tekst in strony:
+        podroze = podroze_ze_strony(tekst, adres, cel, U, dzis)
+        log(f"Itaka {adres.rstrip('/').rsplit('/', 1)[-1]}: odczytano {len(terminy(tekst, dzis))} terminów, "
+            f"z Twoich lotnisk: {len(podroze)}")
+        if terminy(tekst, dzis) or "Wylot:" in tekst or "ofert" in tekst.lower():
+            wynik.udane += 1
+        for p in podroze:
+            klucz = (p.lotnisko_wylotu, p.cel, p.wylot, p.powrot)
+            if klucz not in jest or p.cena < jest[klucz].cena:
+                jest[klucz] = p
+    wynik.podroze = list(jest.values())
+    if not wynik.udane:
         wynik.status, wynik.uwaga = "błąd", "nie odczytano terminów (zmiana strony?)"
-        return wynik
-    wynik.udane = 1
-    for (w, r), c in lista.items():
-        if w > dzis:
-            tam, pow_ = rozklady.get((w, r), (None, None))
-            ct, cp = minuty.get((w, r), (None, None))
-            wynik.podroze.append(Podroz("itaka", "czarter", U.ITAKA_LOTNISKO, U.ITAKA_LOTNISKO,
-                                        w, r, c, OPIS, True, [U.ITAKA_URL], cel=U.CEL,
-                                        linie=["Itaka (czarter LOT)"], rozklad_tam=tam, rozklad_pow=pow_,
-                                        czas_tam=ct, czas_pow=cp))
     return wynik
 
 
 def zrzut(U, katalog: Path) -> None:
     katalog.mkdir(parents=True, exist_ok=True)
-    (katalog / "itaka.txt").write_text(_tekst_strony(U), encoding="utf-8")
+    (katalog / "itaka.txt").write_text("\n\n".join(t for _, _, t in _teksty_stron(U)), encoding="utf-8")

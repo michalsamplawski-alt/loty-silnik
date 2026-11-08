@@ -38,6 +38,7 @@ DOMYSLNE = dict(
     ZRODLA={"google": True, "rainbow": False, "itaka": False}, SPRAWDZAJ_W_JEDNA_STRONE=True,
     WYSYLAJ="zawsze", ILE_W_RAPORCIE=5, ODBIORCY=[],
     RAINBOW_URL="", ITAKA_URL="", ITAKA_LOTNISKO="WAW",
+    CZARTERY_AUTO=True,   # czartery Rainbow i Itaki dobierane same dla każdego lotniska docelowego
     PRZERWA_SEK=(1.5, 4.0),
     NAZWY_LOTNISK={"Warszawa": "WAW", "Katowice": "KTW", "Poznań": "POZ", "Kraków": "KRK", "Gdańsk": "GDN",
                    "Wrocław": "WRO", "Rzeszów": "RZE", "Łódź": "LCJ", "Lublin": "LUB", "Bydgoszcz": "BZG",
@@ -59,9 +60,11 @@ def ustawienia(dane: dict | None = None) -> SimpleNamespace:
     for klucz, wartosc in (dane or {}).items():
         k[klucz] = wartosc
     k["ZRODLA"] = {**DOMYSLNE["ZRODLA"], **(k.get("ZRODLA") or {})}
-    if not k.get("RAINBOW_URL"):
+    if k.get("CZARTERY_AUTO"):
+        k["ZRODLA"]["rainbow"] = k["ZRODLA"]["itaka"] = True
+    if not k.get("RAINBOW_URL") and not k.get("CZARTERY_AUTO"):
         k["ZRODLA"]["rainbow"] = False
-    if not k.get("ITAKA_URL"):
+    if not k.get("ITAKA_URL") and not k.get("CZARTERY_AUTO"):
         k["ZRODLA"]["itaka"] = False
     k["PRZERWA_SEK"] = tuple(k["PRZERWA_SEK"])
     for pole in ("CELE_DODATKOWE", "PREFEROWANE_LINIE", "WYKLUCZONE_LINIE", "ODBIORCY", "WYKLUCZONE_PRZESIADKI"):
@@ -328,10 +331,12 @@ def zbierz(K, okna, dzis, test=False) -> dict[str, Wynik]:
         if not K.ZRODLA.get(nazwa):
             continue
         try:
-            wyniki[nazwa] = modul.pobierz(okna, K, dzis, test=test)
+            w = modul.pobierz(okna, K, dzis, test=test)
         except Exception as e:
-            wyniki[nazwa] = Wynik(nazwa, status="błąd", uwaga=f"{type(e).__name__}: {e}")
-        w = wyniki[nazwa]
+            w = Wynik(nazwa, status="błąd", uwaga=f"{type(e).__name__}: {e}")
+        if w is None:   # to źródło nie ma ofert dla lotnisk docelowych tego wyjazdu
+            continue
+        wyniki[nazwa] = w
         print(f"→ {NAZWY_ZRODEL[nazwa]}: {w.status}; podróży {len(w.podroze)}, odcinków {len(w.odcinki)}"
               + (f"; {w.uwaga}" if w.uwaga else ""))
     return wyniki
