@@ -384,6 +384,8 @@ def test_analiza_dla_aplikacji():
     assert w["najnowsze"]["okna"][1]["kategorie"] == [] and w["historia_dzis"][0]["cena"] == 4100
     w2 = N.przeanalizuj(kryteria(BUDZET_MAKS=3000), okna, wyniki_przykladowe(), DZIS, [], {})
     assert w2["najnowsze"]["okna"][0]["poza_budzetem"]["cena"] == 4100
+    pom = w2["najnowsze"]["okna"][0]["pominiete"]
+    assert pom["drozsze"] >= 1 and pom["limit"] == 3000 and pom["najtanszy_drozszy"] == 4100
     import json
     json.dumps(w)   # dane muszą dać się wysłać do aplikacji
 

@@ -235,6 +235,14 @@ def przeanalizuj(K, okna: list[Okno], wyniki: dict[str, Wynik], dzis: dt.date,
              "awaryjne": [], "polecam": None, "poza_budzetem": None}
         if wszystkie and not lista:
             o["poza_budzetem"] = jako_dane(wszystkie[0], okno, K)
+        # Co znalazło się, ale nie pasuje – aplikacja pokazuje to pod listą połączeń.
+        drozsze = [p.cena for p in wszystkie if K.BUDZET_MAKS is not None and p.cena > K.BUDZET_MAKS]
+        inne_noce = [p for w in wyniki.values() for p in w.podroze
+                     if okno.od <= p.wylot <= okno.do and not okno.dobra_para(p.wylot, p.powrot)]
+        o["pominiete"] = {"drozsze": len(drozsze), "limit": K.BUDZET_MAKS,
+                          "najtanszy_drozszy": min(drozsze) if drozsze else None,
+                          "inne_noce": len(inne_noce),
+                          "inne_noce_zrodla": sorted({p.zrodlo for p in inne_noce})}
         for klucz, etykieta, _ in KATEGORIE:
             p = kat.get(klucz)
             if not p:
