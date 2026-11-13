@@ -5,7 +5,9 @@ on:
     # GitHub potrafi pominąć zaplanowane uruchomienie – dlatego poranne sprawdzenie robi pierwsze
     # uruchomienie po 6:00 (czas polski), jeśli dziś jeszcze go nie było (czy_sprawdzac.py).
     - cron: "15 5 * * *"   # ok. 6:15 czasu polskiego zimą
-    - cron: "7 * * * *"    # co godzinę: „Sprawdź teraz” z aplikacji i zapas dla porannego
+    # Co 10 minut: GitHub pomija wiele zaplanowanych uruchomień (godzinne ruszało co 3–5 godzin),
+    # a zadanie „plan” bez zlecenia kończy się w kilka sekund.
+    - cron: "*/10 * * * *" # „Sprawdź teraz” z aplikacji i zapas dla porannego
   workflow_dispatch:
 
 env:
